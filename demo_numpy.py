@@ -14,7 +14,7 @@
 
 import numpy as np
 import dimod
-from dwave.system import LeapHybridSampler
+from dwave.samplers import SimulatedAnnealingSampler
 
 import demo
 
@@ -117,8 +117,8 @@ if __name__ == '__main__':
                     args.new_chargers)
 
     # Run BQM on HSS
-    sampler = LeapHybridSampler()
-    print("\nRunning scenario on", sampler.solver.id, "solver...")
+    sampler = SimulatedAnnealingSampler()
+    print("\nRunning scenario using SimulatedAnnealingSampler...")
 
     new_charging_nodes = demo.run_bqm_and_collect_solutions(bqm, sampler, potential_new_cs_nodes)
 
