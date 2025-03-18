@@ -17,8 +17,8 @@ import argparse
 import dimod
 import sys
 import networkx as nx
-import numpy as np
-from dwave.system import LeapHybridSampler
+from dwave.samplers import SimulatedAnnealingSampler
+NUM_READS = 100
 
 import matplotlib
 try:
@@ -173,6 +173,7 @@ def run_bqm_and_collect_solutions(bqm, sampler, potential_new_cs_nodes, **kwargs
 
     sampleset = sampler.sample(bqm,
                                label='Example - EV Charger Placement',
+                               num_reads=NUM_READS,
                                **kwargs)
 
     ss = sampleset.first.sample
@@ -291,8 +292,8 @@ if __name__ == '__main__':
     bqm = build_bqm(potential_new_cs_nodes, args.poi, pois, args.chargers, charging_stations, args.new_chargers)
 
     # Run BQM on HSS
-    sampler = LeapHybridSampler()
-    print("\nRunning scenario on", sampler.solver.id, "solver...")
+    sampler = SimulatedAnnealingSampler()
+    print("\nRunning scenario using SimulatedAnnealingSampler...")
 
     new_charging_nodes = run_bqm_and_collect_solutions(bqm, sampler, potential_new_cs_nodes)
 
