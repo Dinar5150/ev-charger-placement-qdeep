@@ -5,6 +5,10 @@
   https://circleci.com/gh/dwave-examples/ev-charger-placement.svg?style=shield)](
   https://circleci.com/gh/dwave-examples/ev-charger-placement)
 
+# Important note
+
+This repository is a fork of [D-Wave's original ev-charger-placement](https://github.com/dwave-examples/ev-charger-placement). The contributors to this fork do not claim ownership or authorship of the original codebase. All credit for the original work belongs to D-Wave Systems and its respective contributors.
+
 # Placement of Charging Stations
 
 Determining optimal locations to build new electric vehicle charging stations
