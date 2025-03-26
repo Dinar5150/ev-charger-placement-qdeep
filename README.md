@@ -1,129 +1,95 @@
-# Important note
+# Important Note
 
 This repository is a fork of [D-Wave's original ev-charger-placement](https://github.com/dwave-examples/ev-charger-placement). The contributors to this fork do not claim ownership or authorship of the original codebase. All credit for the original work belongs to D-Wave Systems and its respective contributors.
 
+This fork introduces improvements in computational efficiency, a refined problem formulation, and an updated implementation that uses the QDeepHybridSolver API from the [qdeepsdk](https://pypi.org/project/qdeepsdk/1.0.1/) package.
+
 # Placement of Charging Stations
 
-Determining optimal locations to build new electric vehicle charging stations
-is a complex optimization problem.  Many factors should be taken into
-consideration, like existing charger locations, points of interest (POIs),
-quantity to build, etc. In this example, we take a look at how we might
-formulate this optimization problem and solve it using D-Wave's binary
-quadratic model (BQM) hybrid solver.
+Determining optimal locations to build new electric vehicle charging stations is a complex optimization problem. Many factors should be taken into consideration, such as existing charger locations, points of interest (POIs), and the number of new stations to build. In this example, we formulate the problem as a binary optimization (QUBO) task and solve it using a hybrid quantum-classical solver.
+
+The problem is encoded via a QUBO matrix that incorporates four key objectives:
+
+- **Minimize distance to POIs:** New charging stations should be close to points of interest for user convenience.
+- **Maximize distance to existing charging stations:** New stations should not overlap with or be too near current chargers.
+- **Maximize distance between new charging stations:** Spreading out new chargers maximizes overall regional coverage.
+- **Enforce exactly two new charging stations:** The model includes a hard constraint to select exactly the specified number of new charging stations.
+
+In this fork, we build the QUBO matrix manually—either using explicit loops (in `demo.py`) or vectorized NumPy operations (in `demo_numpy.py`)—and then solve the problem using QDeepHybridSolver.
 
 ## Usage
 
-To run the demo, type the command:
+To run the loop-based demo:
 
-```python demo.py```
+```sh
+python demo.py
+```
 
-The program will construct a 14x15 grid representation of a city, and randomly
-place 3 POIs and 4 current charging station locations. Using the BQM hybrid
-solver, locations for 2 new charging stations will be selected.
+Or to run the NumPy vectorized version:
 
-After the new charging station locations have been selected, an image is
-created. This image shows the current map with existing charging locations
-shown in red and POIs denoted by P (left figure), as well as a future map with
-the future charging station locations colored in blue (right figure). This
-image is saved as ```map.png```, as shown in the image below.
+```sh
+python demo_numpy.py
+```
 
-![Example output](readme_imgs/map.png "Example output")
+Both scripts generate a grid-based city scenario. For example, by default the code creates a 15x15 grid with 3 randomly placed POIs and 4 existing charging stations. The QUBO formulation then selects locations for 2 new charging stations. After the solver runs, a visualization is saved as `map.png` (showing POIs, existing stations in red, and new stations in blue) and the results are printed to the command line.
 
-Finally, the new charging locations within the grid are printed on the command
-line for the user, as well as some information on distances in the new map.
+### Customizing the Scenario
 
-### Customizing the scenario
+You can adjust various parameters via command-line options:
 
-Options are also provided for the user to customize several components of the
-randomly generated scenario.
+- `-x`: Grid width (default: 15)
+- `-y`: Grid height (default: 15)
+- `-p`: Number of POIs (default: 3)
+- `-c`: Number of existing charging stations (default: 4)
+- `-n`: Number of new charging stations to place (default: 2)
+- `-s`: Random seed for reproducibility
 
-- `-x`: set the grid horizontal dimension. Default: 15.
-- `-y`: set the grid vertical dimension. Default: 15.
-- `-p`: set the number of POIs on the grid. Default: 3.
-- `-c`: set the number of existing charging stations on the grid. Default: 4.
-- `-n`: set the number of new charging stations to be placed. Default: 2.
-- `-s`: set a random seed so that specific senarios can be repeated.
+For example:
 
-Any combination of these options may be used. For example:
+```sh
+python demo.py -x 10 -y 10 -c 2
+```
 
-```python demo.py -x 10 -y 10 -c 2```
-
-builds a random scenario on a 10x10 grid with 3 POIs, 2 existing chargers, and
-2 new locations to be identified.
+This builds a random scenario on a 10x10 grid with 3 POIs, 2 existing chargers, and 2 new locations to be identified.
 
 ## Problem Formulation
 
-There are many different variations of the electric vehicle charger placement
-problem that might be considered. For this demo, we examine the case in which a
-small region is under consideration, and all locations in our area of
-consideration are within walking distance. In this situation, we want to place
-new charging locations that are convenient to all POIs. For example, if the
-POIs are shops on a main street it is most convenient to park once in a central
-location. We will satisfy this need by considering the average distance from a
-potential new charging location all POIs [[1]](#1). Additionally, we want to
-place new chargers away from existing and other new charging locations so as to
-minimize overlap and maximize coverage of the region.
+The core of this project is the formulation of the charging station placement as a QUBO problem. Each potential new charging station location is represented by a binary variable. Four independent constraints are used to shape the optimization:
 
-This problem can be considered as a set of 4 independent constraints (or
-objectives) with binary variables that represent each potential new charging
-station location.
+### Minimize Distance to POIs
 
-### Minimize distance to POIs
+For each candidate location, we calculate the average Euclidean squared distance to all POIs. A positive bias proportional to this average (weighted by a tunable parameter `gamma1`) is added to the QUBO matrix to encourage selections near POIs.
 
-For each potential new charging station location, we compute the average
-distance to all POIs on the map. Using this value as a linear bias on each
-binary variable, our program will prefer locations that are (on average) close
-to the POIs. Note that this constraint could be replaced by an alternative one
-depending on the real world scenario for this problem.
+### Maximize Distance to Existing Charging Stations
 
-### Maximize distance to existing charging stations
+Similarly, for each candidate we compute the average distance to existing charging stations. A negative bias (scaled by `gamma2`) is applied so that locations farther from current stations are preferred.
 
-For each potential new charging station location, we compute the average
-distance to all existing charging locations on the map. Using the negative of
-this value as a linear bias on each binary variable, our program will prefer
-locations that are (on average) far from existing chargers.
+### Maximize Distance Between New Charging Stations
 
-### Maximize distance to other new charging stations
+For every pair of candidate locations, the pairwise distance is computed, and a negative quadratic bias (weighted by `gamma3`) is applied. This encourages the new charging stations to be spread out over the grid.
 
-For the pair of new charging station locations, we would like to maximize the
-distance between them. To do this, we consider all possible pairs of locations
-and compute the distance between them.  Using the negative of this value as a
-quadratic bias on the product of the corresponding binary variables, our
-program will prefer locations that are far apart.
+### Build Exactly Two New Charging Stations
 
-### Build exactly two new charging stations
+In our QUBO formulation, we enforce that exactly `num_new_cs` (e.g., two) new charging stations are selected by modifying the QUBO matrix. Instead of using a built-in function like `dimod.generators.combinations`, we add penalty terms directly:  
+- A linear bias of `gamma4 * (1 - 2*num_new_cs)` is added to each candidate (diagonal elements).  
+- A quadratic bias of `2 * gamma4` is added to every off-diagonal pair.  
 
-To select exactly two new charging stations, we use
-[`dimod.generators.combinations`](https://docs.ocean.dwavesys.com/en/stable/docs_dimod/reference/generated/dimod.generators.combinations.html?highlight=%22dimod.generators.combinations%22). This function in Ocean's `dimod` package
-sets exactly `num_new_cs` of our binary variables (`bqm.variables`) to have a
-value of 1, and applies a strength to this constraint (`gamma4`). See below for
-more information on the tunable strength parameter.
+Together, these terms penalize any configuration where the total number of active (i.e. 1-valued) binary variables deviates from `num_new_cs`. The tunable parameter `gamma4` controls the strength of this constraint within the overall optimization problem.
 
-### Parameter tuning
+## Faster QUBO Construction
 
-Each of these constraints is built into our BQM object with a coefficient
-(names all start with `gamma`).  This term gamma is known as a Lagrange
-parameter and can be used to weight the constraints against each other to
-accurately reflect the requirements of the problem. You may wish to adjust this
-parameter depending on your problem requirements and size. The value set here
-in this program was chosen to empirically work well as a starting point for
-problems of a wide-variety of sizes. For more information on setting this
-parameter, see D-Wave's [Problem Formulation
-Guide](https://www.dwavesys.com/practical-quantum-computing-developers).
+Two versions of the code are provided:  
+- **demo.py:** Builds the QUBO using explicit Python loops.  
+- **demo_numpy.py:** Constructs the same QUBO using vectorized NumPy operations for improved efficiency.  
 
-## Faster BQM Construction
-
-An alternative demo file, `demo_numpy.py`, shows how the BQM for this problem
-can be constructed using NumPy arrays and vectors. Utilizing NumPy and matrix
-operations allows for a much faster construction of the BQM than building it
-with for-loops. As problem instances become larger and larger, it becomes more
-and more important to efficiently build the BQM to save time in the
-initialization and setup of the model. The chart below demonstrates the savings
-in classical compute time when setting up the BQM for this problem using
-for-loops versus using efficient NumPy operations in the Leap IDE.
+As problem instances become larger, the NumPy-based approach can significantly reduce initialization time.
 
 ![Classical comparison](readme_imgs/runtimes.png "Classical Runtime Comparison")
 
+## Solver Integration
+
+The QUBO is solved using the [QDeepHybridSolver](https://pypi.org/project/qdeepsdk/1.0.1/) from the qdeepsdk package. In our code, after constructing the QUBO matrix, we initialize the solver, set the authentication token, optionally adjust parameters like `m_budget` and `num_reads`, and call its `solve` method. The result (which includes the binary configuration, energy, and runtime) is then mapped back to the candidate nodes to identify which new locations have been selected.
+
 ## References
 
-<a name="1">[1]</a> Pagany, Raphaela, Anna Marquardt, and Roland Zink. "Electric Charging Demand Location Model—A User-and Destination-Based Locating Approach for Electric Vehicle Charging Stations." Sustainability 11.8 (2019): 2301. [https://doi.org/10.3390/su11082301](https://doi.org/10.3390/su11082301)
+[1] Pagany, Raphaela, Anna Marquardt, and Roland Zink. "Electric Charging Demand Location Model—A User-and Destination-Based Locating Approach for Electric Vehicle Charging Stations." *Sustainability* 11.8 (2019): 2301. [https://doi.org/10.3390/su11082301](https://doi.org/10.3390/su11082301)
