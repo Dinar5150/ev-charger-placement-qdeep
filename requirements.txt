@@ -1,2 +1,4 @@
-dwave-ocean-sdk>=3.3.0
 matplotlib
+qdeepsdk
+requests
+numpy
