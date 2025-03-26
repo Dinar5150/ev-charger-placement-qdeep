@@ -1,4 +1,5 @@
-# Copyright 2021 D-Wave Systems Inc.
+#!/usr/bin/env python
+# Copyright 2020 D-Wave Systems Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,123 +13,105 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
+import argparse
+import networkx as nx
+import matplotlib.pyplot as plt
 import numpy as np
-import dimod
-from dwave.samplers import SimulatedAnnealingSampler
 
-import demo
+from qdeepsdk import QDeepHybridSolver
 
-def build_bqm(potential_new_cs_nodes, num_poi, pois, num_cs, charging_stations, num_new_cs):
-    """Build bqm that models our problem scenario using NumPy. 
+def read_in_args():
+    """Read user-specified parameters from the command line."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-x", "--width", help="grid width", default=15, type=int)
+    parser.add_argument("-y", "--height", help="grid height", default=15, type=int)
+    parser.add_argument("-p", "--poi", help="number of points of interest", default=3, type=int)
+    parser.add_argument("-c", "--chargers", help="number of existing chargers", default=4, type=int)
+    parser.add_argument("-n", "--new-chargers", help="number of new chargers", default=2, type=int)
+    args = parser.parse_args()
+    if args.poi > args.width * args.height or (args.chargers + args.new_chargers) > args.width * args.height:
+        print("Grid size is not large enough for scenario.")
+        exit(0)
+    return args
 
-    Args:
-        potential_new_cs_nodes (list of tuples of ints): 
-            Potential new charging locations
-        num_poi (int): Number of points of interest
-        pois (list of tuples of ints): A fixed set of points of interest
-        num_cs (int): Number of existing charging stations
-        charging_stations (list of tuples of ints): 
-            A fixed set of current charging locations
-        num_new_cs (int): Number of new charging stations desired
+def set_up_scenario(w, h, num_poi, num_cs):
+    """Create a grid scenario with randomly chosen points of interest and existing chargers."""
+    G = nx.grid_2d_graph(w, h)
+    nodes = list(G.nodes)
+    pois = random.sample(nodes, k=num_poi)
+    charging_stations = random.sample(nodes, k=num_cs)
+    potential_new_cs_nodes = list(set(nodes) - set(charging_stations))
+    return G, pois, charging_stations, potential_new_cs_nodes
+
+def build_qubo_vectorized(potential_new_cs_nodes, num_poi, pois, num_cs, charging_stations, num_new_cs):
+    """Build QUBO matrix using vectorized NumPy operations.
     
     Returns:
-        bqm_np (BinaryQuadraticModel): QUBO model for the input scenario
+        Q: a symmetric NumPy array representing the QUBO.
     """
-
-    # Tunable parameters
-    gamma1 = len(potential_new_cs_nodes) * 4.
-    gamma2 = len(potential_new_cs_nodes) / 3.
-    gamma3 = len(potential_new_cs_nodes) * 1.7
-    gamma4 = len(potential_new_cs_nodes) ** 3
-
-    # Build BQM using adjVectors to find best new charging location s.t. min
-    # distance to POIs and max distance to existing charging locations
-    linear = np.zeros(len(potential_new_cs_nodes))
-
-    nodes_array = np.asarray(potential_new_cs_nodes)
-    pois_array = np.asarray(pois)
-    cs_array = np.asarray(charging_stations)
-
-    # Constraint 1: Min average distance to POIs
-    if num_poi > 0:
-
-        ct_matrix = (np.matmul(nodes_array, pois_array.T)*(-2.) 
-                    + np.sum(np.square(pois_array), axis=1).astype(float) 
-                    + np.sum(np.square(nodes_array), axis=1).reshape(-1,1).astype(float))
-
-        linear += np.sum(ct_matrix, axis=1) / num_poi * gamma1
-
-    # Constraint 2: Max distance to existing chargers
-    if num_cs > 0:    
-
-        dist_mat = (np.matmul(nodes_array, cs_array.T)*(-2.) 
-                    + np.sum(np.square(cs_array), axis=1).astype(float) 
-                    + np.sum(np.square(nodes_array), axis=1).reshape(-1,1).astype(float))
-
-        linear += -1 * np.sum(dist_mat, axis=1) / num_cs * gamma2 
-
-    # Constraint 3: Max distance to other new charging locations
-    if num_new_cs > 1:
-
-        dist_mat = -gamma3*((np.matmul(nodes_array, nodes_array.T)*(-2.) 
-                    + np.sum(np.square(nodes_array), axis=1)).astype(float) 
-                    + np.sum(np.square(nodes_array), axis=1).reshape(-1,1).astype(float))
-
-    else:
-        dist_mat = np.zeros((len(potential_new_cs_nodes),len(potential_new_cs_nodes)))
-
-    # Constraint 4: Choose exactly num_new_cs new charging locations
-    linear += (1-2*num_new_cs)*gamma4
-    dist_mat += 2*gamma4
-    dist_mat = np.triu(dist_mat, k=1).flatten()
-
-    quad_col = np.tile(np.arange(len(potential_new_cs_nodes)), len(potential_new_cs_nodes))
-    quad_row = np.tile(np.arange(len(potential_new_cs_nodes)), 
-                (len(potential_new_cs_nodes),1)).flatten('F')
-
-    q2 = quad_col[dist_mat != 0]
-    q1 = quad_row[dist_mat != 0]
-    q3 = dist_mat[dist_mat != 0]
+    nodes_array = np.array(potential_new_cs_nodes, dtype=float)
+    pois_array = np.array(pois, dtype=float)
+    cs_array = np.array(charging_stations, dtype=float)
+    n = nodes_array.shape[0]
+    Q = np.zeros((n, n))
     
-    bqm_np = dimod.BinaryQuadraticModel.from_numpy_vectors(linear=linear, 
-                                                            quadratic=(q1, q2, q3), 
-                                                            offset=0, 
-                                                            vartype=dimod.BINARY)
+    # Constraint 1: Minimize average distance to POIs.
+    gamma1 = n * 4.0
+    diff = nodes_array[:, None, :] - pois_array[None, :, :]
+    dists = np.sum(diff**2, axis=2)  # shape (n, num_poi)
+    avg_dist = np.mean(dists, axis=1)
+    Q[np.diag_indices(n)] += avg_dist * gamma1
 
-    return bqm_np
+    # Constraint 2: Maximize distance to existing chargers.
+    gamma2 = n / 3.0
+    diff_cs = nodes_array[:, None, :] - cs_array[None, :, :]
+    dists_cs = np.sum(diff_cs**2, axis=2)
+    avg_dist_cs = np.mean(dists_cs, axis=1)
+    Q[np.diag_indices(n)] += -avg_dist_cs * gamma2
+
+    # Constraint 3: Maximize separation between new chargers.
+    gamma3 = n * 1.7
+    diff_candidates = nodes_array[:, None, :] - nodes_array[None, :, :]
+    dists_candidates = np.sum(diff_candidates**2, axis=2)
+    Q += -gamma3 * dists_candidates
+
+    # Constraint 4: Force exactly num_new_cs new charger selections.
+    gamma4 = n**3
+    Q[np.diag_indices(n)] += gamma4 * (1 - 2*num_new_cs)
+    off_diag = np.ones((n, n)) - np.eye(n)
+    Q += 2 * gamma4 * off_diag
+
+    return Q
+
+def run_qubo_solver(Q):
+    """Solve the QUBO problem using QDeepHybridSolver."""
+    solver = QDeepHybridSolver()
+    # Set your authentication token (replace with a valid token)
+    solver.token = "mtagdfsplb"
+    response = solver.solve(Q)
+    return response
+
+def save_output_image(G, pois, charging_stations, new_charger_nodes):
+    """Generate and save an image of the grid scenario."""
+    fig, ax = plt.subplots(figsize=(8,8))
+    pos = {node: (node[0], node[1]) for node in G.nodes()}
+    nx.draw(G, pos=pos, node_color='lightgray', ax=ax)
+    nx.draw_networkx_nodes(G, pos=pos, nodelist=pois, node_color='black', label='POI')
+    nx.draw_networkx_nodes(G, pos=pos, nodelist=charging_stations, node_color='red', label='Existing Charger')
+    nx.draw_networkx_nodes(G, pos=pos, nodelist=new_charger_nodes, node_color='#00b4d9', label='New Charger')
+    ax.legend()
+    plt.savefig("map.png")
+    plt.close()
 
 if __name__ == '__main__':
-
-    # Collect user inputs
-    args = demo.read_in_args()
-
-    # Build large grid graph for city
-    G, pois, charging_stations, potential_new_cs_nodes = demo.set_up_scenario(args.width, 
-                                                                            args.height, 
-                                                                            args.poi, 
-                                                                            args.chargers)
-
-    # Build BQM
-    bqm = build_bqm(potential_new_cs_nodes, 
-                    args.poi, 
-                    pois, 
-                    args.chargers, 
-                    charging_stations, 
-                    args.new_chargers)
-
-    # Run BQM on HSS
-    sampler = SimulatedAnnealingSampler()
-    print("\nRunning scenario using SimulatedAnnealingSampler...")
-
-    new_charging_nodes = demo.run_bqm_and_collect_solutions(bqm, sampler, potential_new_cs_nodes)
-
-    # Print results to commnand-line for user
-    demo.printout_solution_to_cmdline(pois, 
-                                    args.poi, 
-                                    charging_stations, 
-                                    args.chargers, 
-                                    new_charging_nodes, 
-                                    args.new_chargers)
-
-    # Create scenario output image
-    demo.save_output_image(G, pois, charging_stations, new_charging_nodes)
+    args = read_in_args()
+    G, pois, charging_stations, potential_new_cs_nodes = set_up_scenario(args.width, args.height, args.poi, args.chargers)
+    Q = build_qubo_vectorized(potential_new_cs_nodes, args.poi, pois, args.chargers, charging_stations, args.new_chargers)
+    response = run_qubo_solver(Q)
+    solution = response.get('QdeepHybridSolver', {})
+    config = solution.get('configuration', [])
+    new_charger_nodes = [potential_new_cs_nodes[i] for i, bit in enumerate(config) if bit == 1]
+    print("\nHybrid Solver Results:")
+    print(solution)
+    save_output_image(G, pois, charging_stations, new_charger_nodes)
